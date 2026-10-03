@@ -25,6 +25,7 @@ const html = fs.readFileSync(path.join(RENDERER, "index.html"), "utf8");
 
 const failures = [];
 const checks = [];
+const skipped = [];
 function check(label, ok, detail) {
   checks.push({ label, ok, detail });
   if (!ok) failures.push(`${label}${detail ? " —— " + detail : ""}`);
@@ -53,25 +54,20 @@ const BOM_SENSITIVE = [
   "docs/发布流程.md",
   "docs/安装说明.md",
 ];
+// 编码与仓库卫生规则都抽到了 src/repo-hygiene.js（纯函数，可被单元测试直接证伪）。
+// 这里只负责"取数据 + 报告结果"。
+const hygiene = require("./src/repo-hygiene");
+
 for (const rel of BOM_SENSITIVE) {
   const full = path.join(PROJECT_ROOT, rel);
   if (!fs.existsSync(full)) continue;
   const buf = fs.readFileSync(full);
-  const hasBom = buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
-  check(`${rel} 不含 BOM`, !hasBom, "检测到 EF BB BF，会导致 GitHub Actions 解析失败");
+  check(`${rel} 不含 BOM`, !hygiene.hasBom(buf), "检测到 EF BB BF，会导致 GitHub Actions 解析失败");
 }
 
-// 乱码检测。两层：
-//   ① 已知乱码字符（UTF-8 中文被按 GBK 解码的典型产物，正常中文里几乎不可能出现）
-//   ② 统计式兜底：一份正常的中文文档必然含「的/了/是/在/不」这类高频字。
-//      如果中文很多却一个高频字都没有，几乎可以断定编码坏了 —— 这一层能抓住
-//      ① 覆盖不到的、陌生的编码错误。
-//
-// 注意：不要用 PowerShell 的 Get-Content 去判断编码 —— PS 5.1 会用系统 ANSI 代码页
-// 读 UTF-8 文件，于是干净的文件在终端里显示成乱码。这个坑本人在开发中踩过：
-// 差点去"修"一个其实没坏的文件。判断编码请用 node 或 read 工具。
-const MOJIBAKE_MARKERS = ["锛", "鈥", "銆", "缁", "鐗", "鍜", "浣", "瀛", "鏄", "涓", "鈿", "馃"];
-const COMMON_HAN = ["的", "了", "是", "在", "不", "有", "这", "要", "和", "我"];
+// 乱码检测。注意：不要用 PowerShell 的 Get-Content 判断编码 ——
+// PS 5.1 会用系统 ANSI 代码页读 UTF-8 文件，干净的文件在终端里会显示成乱码
+// （这个坑踩过，差点去"修"一个没坏的文件）。判断编码请用 node 或 read 工具。
 const CHECK_ENCODING = [
   ".github/workflows/build-windows.yml",
   ".gitignore",
@@ -83,40 +79,25 @@ const CHECK_ENCODING = [
 for (const rel of CHECK_ENCODING) {
   const full = path.join(PROJECT_ROOT, rel);
   if (!fs.existsSync(full)) continue;
-  const text = fs.readFileSync(full, "utf8");
-
-  const found = MOJIBAKE_MARKERS.filter((m) => text.includes(m));
+  const r = hygiene.scanEncoding(fs.readFileSync(full, "utf8"));
   check(
     `${rel} 中文未乱码（已知标记）`,
-    found.length === 0,
-    `发现乱码字符 ${found.join(" ")} —— 文件被以错误编码重写过`
+    r.markers.length === 0,
+    `发现乱码字符 ${r.markers.join(" ")} —— 文件被以错误编码重写过`
   );
-
-  // 统计式兜底：只对中文内容足够多的文件生效（避免误伤英文为主的文件）
-  const hanCount = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
-  if (hanCount >= 300) {
-    const commonHits = COMMON_HAN.filter((c) => text.includes(c)).length;
+  if (r.hanCount >= 300) {
     check(
       `${rel} 中文可读（含常见字）`,
-      commonHits >= 3,
-      `中文 ${hanCount} 字却几乎不含高频常用字（命中 ${commonHits}/10），疑为编码损坏`
+      !r.statsSuspect,
+      `中文 ${r.hanCount} 字却几乎不含高频常用字（命中 ${r.commonHits}/10），疑为编码损坏`
     );
   }
-
-  // 替换字符（U+FFFD）通常是解码失败的痕迹
-  const replacementCount = (text.match(/\uFFFD/g) || []).length;
-  check(`${rel} 无解码失败字符`, replacementCount === 0, `出现 ${replacementCount} 个 U+FFFD`);
+  check(`${rel} 无解码失败字符`, r.replacementCount === 0, `出现 ${r.replacementCount} 个 U+FFFD`);
 }
 
 /* ---------- 0.9 公开仓库里不应出现本机专属信息 ---------- */
-// 为什么查这个：开发时的笔记很容易带上本机绝对路径（F:\...、C:\Users\...），
-// 这些东西推到公开仓库后对别人毫无意义，还暴露了开发环境。
-// 这个检查在 CI 里也会跑（npm run verify），所以能自动拦住，不必靠人工发现。
-const LOCAL_PATH_PATTERNS = [
-  { re: /[A-Za-z]:\\{1,2}(Users|Documents|Desktop|Projects|DSH)[^\s`"')]*/g, label: "Windows 用户/项目绝对路径" },
-  { re: /\/Users\/[a-zA-Z0-9._-]+\//g, label: "macOS 用户目录" },
-  { re: /\/home\/[a-zA-Z0-9._-]+\//g, label: "Linux 用户目录" },
-];
+// 开发时的笔记很容易带上本机绝对路径（F:\...、C:\Users\...），
+// 推到公开仓库后对别人毫无意义，还暴露了开发环境。
 const PUBLIC_FILES = [
   "README.md",
   "LICENSE",
@@ -124,45 +105,70 @@ const PUBLIC_FILES = [
   "docs/发布流程.md",
   ".github/workflows/build-windows.yml",
 ];
-for (const rel of PUBLIC_FILES) {
-  const full = path.join(PROJECT_ROOT, rel);
-  if (!fs.existsSync(full)) continue;
-  const text = fs.readFileSync(full, "utf8");
-  const hits = [];
-  for (const { re, label } of LOCAL_PATH_PATTERNS) {
-    const m = text.match(re);
-    if (m) hits.push(`${label}: ${[...new Set(m)].slice(0, 3).join(", ")}`);
+{
+  const entries = [];
+  for (const rel of PUBLIC_FILES) {
+    const full = path.join(PROJECT_ROOT, rel);
+    if (!fs.existsSync(full)) continue;
+    entries.push([rel, fs.readFileSync(full, "utf8")]);
   }
-  check(
-    `${rel} 不含本机绝对路径`,
-    hits.length === 0,
-    `${hits.join("；")} —— 公开仓库里不应包含本机专属路径`
-  );
+  const r = hygiene.scanLocalPaths(entries);
+  for (const f of r.findings) {
+    check(`${f.file} 不含本机绝对路径`, false, `${f.hits.join("；")} —— 公开仓库里不应包含本机专属路径`);
+  }
+  check(`公开文件不含本机绝对路径（检查了 ${entries.length} 个文件）`, r.ok);
 }
 
-// docs/ 下只应有面向用户的文档。内部工作笔记（计划、访谈记录、调研笔记、交接笔记）
-// 应该留在本地 —— 它们对 clone 项目的人没有价值，还可能带上开发环境痕迹。
-const ALLOWED_DOCS = new Set(["docs/安装说明.md", "docs/发布流程.md"]);
-const trackedDocs = (() => {
-  try {
-    const { execFileSync } = require("node:child_process");
-    const out = execFileSync("git", ["ls-files", "docs"], {
-      cwd: PROJECT_ROOT,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return out.split("\n").map((s) => s.trim()).filter(Boolean);
-  } catch {
-    return null; // 不是 git 仓库或 git 不可用，跳过这项（CI 里 git 一定可用）
+// docs/ 下只应有面向用户的文档。内部工作笔记（开发计划、访谈记录、调研笔记、
+// 交接笔记）留在本地 —— 对 clone 项目的人没有价值，还可能带开发环境痕迹。
+//
+// 判断依据必须是 **git 的追踪状态**，不能用目录列表：本机的 docs/ 里确实还留着
+// 这些笔记文件（它们被 .gitignore 排除、不会提交），用目录列表会误判成违规。
+//
+// 踩过的坑（规则本身已抽到 src/repo-hygiene.js 并被单元测试覆盖）：
+//   1. Node 直接 spawn git 在受限环境会 EPERM。原先的 catch 把它吞成 null，
+//      导致这条检查在本地被静默跳过 —— 看到的是"假通过"。现在改为明确报告跳过。
+//   2. git 默认转义非 ASCII 路径（docs/\345\217\221...），必须加 core.quotepath=false，
+//      否则合法文档会被误报。这个 bug 是 CI 抓到的。
+function listTrackedDocs() {
+  const { execFileSync } = require("node:child_process");
+  let lastError = "";
+  const attempts = [
+    { args: ["-c", "core.quotepath=false", "ls-files", "-z", "docs"], shell: true },
+    { args: ["-c", "core.quotepath=false", "ls-files", "docs"], shell: false },
+  ];
+  for (const a of attempts) {
+    try {
+      const out = execFileSync("git", a.args, {
+        cwd: PROJECT_ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 15000,
+        shell: a.shell,
+      });
+      return out.split("\0").join("\n").split("\n").map((s) => s.trim()).filter(Boolean);
+    } catch (err) {
+      lastError = String((err && err.message) || err).split("\n")[0];
+    }
   }
-})();
-if (trackedDocs) {
-  const unexpected = trackedDocs.filter((f) => !ALLOWED_DOCS.has(f));
+  return { error: lastError };
+}
+
+const docsResult = listTrackedDocs();
+if (Array.isArray(docsResult)) {
+  // 规则本身在 src/repo-hygiene.js 里，这里只喂数据并报告
   check(
-    "docs/ 下没有被跟踪的内部工作文档",
-    unexpected.length === 0,
-    `发现：${unexpected.join(", ")} —— 内部笔记应留在本地并写进 .gitignore`
+    "docs/ 检查确实读到了被跟踪的文件（避免空列表假通过）",
+    hygiene.isDocsCheckMeaningful(docsResult),
+    `只读到 ${docsResult.length} 个：${docsResult.join(", ")}`
   );
+  const r = hygiene.checkDocsScope(docsResult);
+  check("docs/ 下没有被跟踪的内部工作文档", r.ok, r.message);
+} else {
+  // 取不到数据就明确报告"这项没跑"，但**不让整个验证失败** ——
+  // npm run verify 是发布前的硬门槛，如果本地永远红，它就会失去意义（人会开始忽略它）。
+  // 规则逻辑由 test/repo-hygiene.test.js 覆盖，CI 上这里会正常执行。
+  skipped.push(`docs/ 范围检查（无法调用 git：${docsResult.error}）`);
 }
 
 // workflow 的 YAML 基本结构（缩进用空格、必须有 on/jobs、步骤未被压成一行）
@@ -437,10 +443,14 @@ check("app.js 加载成功", runFile("app.js"));
   }
   const passed = checks.filter((c) => c.ok).length;
   console.log(`\n渲染层校验：${passed}/${checks.length} 通过`);
+  if (skipped.length > 0) {
+    console.log(`\n以下检查在本环境被跳过（CI 上会执行）：`);
+    for (const s of skipped) console.log(`  · ${s}`);
+  }
   if (failures.length > 0) {
     console.log(`\n失败项：\n  - ${failures.join("\n  - ")}`);
     process.exitCode = 1;
   } else {
-    console.log("全部通过 ✅");
+    console.log(skipped.length > 0 ? "\n通过 ✅（含跳过的检查）" : "全部通过 ✅");
   }
 })();
