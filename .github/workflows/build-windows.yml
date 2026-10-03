@@ -1,0 +1,123 @@
+name: build-windows
+
+# 打 Windows 安装包与绿色版，并把产物挂到 Release 上。
+#
+# 设计取舍（重要）：
+#   两条打包路径互相独立，且**手工绿色版优先**。
+#
+#   1. 手工绿色版（pack-portable.js）—— 最可靠：
+#      本项目零原生模块、零运行时依赖，Electron 的标准免安装布局就是
+#      "把 app 放进 resources/app/"，不需要任何构建工具链。
+#   2. electron-builder NSIS 安装包 —— 更友好（安装版没有 AppContainer ACL 问题），
+#      但它内部步骤复杂（原生模块重建、npm 模块收集、下载 nsis 二进制），失败概率更高。
+#      所以标了 continue-on-error: true：它失败不能连带把绿色版也拖没。
+#
+#   早期版本把 electron-builder 放在前面且没有 continue-on-error，
+#   结果它一失败，后面的绿色版打包根本没机会跑 —— 一次运行什么都没产出。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # npm ci 不保证执行 electron 的 postinstall，因此 node_modules/electron/dist
+      # 可能不存在（只装了 npm 包本身，没下二进制）。install.js 是幂等的：
+      # 已经装好会立即退出。不补这一步，打包脚本会在"找不到 Electron 运行时"处失败。
+      - name: 确保 Electron 运行时已下载
+        run: node node_modules/electron/install.js
+
+      - name: 检查 Electron 运行时
+        shell: pwsh
+        run: |
+          if (-not (Test-Path node_modules/electron/dist/electron.exe)) {
+            Write-Error "Electron 运行时仍然缺失，后续打包必定失败"
+            exit 1
+          }
+          Write-Host "Electron 运行时就绪"
+
+      - name: 跑全套验证（单测 + 渲染层校验 + 交互演练）
+        run: npm run verify
+
+      # ---- 路径一：手工绿色版（最可靠，必定产出）----
+      - name: 打绿色版 zip（含一键修复脚本）
+        run: npm run pack:zip
+
+      # ---- 路径二：NSIS 安装包（更好用，但允许失败）----
+      - name: 打 NSIS 安装包（失败不阻断）
+        id: nsis
+        continue-on-error: true
+        run: npm run pack:win:ci
+        env:
+          # 不打签名：300 元预算内买不到代码签名证书，用户需点「仍要运行」
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 汇总产出
+        shell: pwsh
+        run: |
+          Write-Host "=== release 目录 ==="
+          if (Test-Path release) {
+            Get-ChildItem release | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table -AutoSize
+          } else {
+            Write-Host "release 目录不存在"
+          }
+          Write-Host "NSIS 安装包是否成功：${{ steps.nsis.outcome }}"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v5
+        with:
+          name: subwatch-windows
+          path: |
+            release/*.exe
+            release/*.zip
+          if-no-files-found: error
+
+      - name: 发布到 Release（仅打 tag 时）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.exe
+            release/*.zip
+          body: |
+            ## 安装
+
+            | 文件 | 说明 |
+            |---|---|
+            | `subwatch-*-x64.exe` | **安装版（推荐）** — 双击安装，装到用户目录，无需管理员权限 |
+            | `subwatch-*-x64.zip` | 绿色版 — 解压即用 |
+            | `subwatch-*-x64-portable.zip` | 绿色版（含一键修复脚本，双击没反应时用它） |
+
+            > Windows 会提示「Windows 已保护你的电脑」——因为**没有购买代码签名证书**
+            > （150–300 美元/年）。点**「更多信息」→「仍要运行」**即可。
+            > 这与程序安全性无关，是 Windows 对所有未签名程序的统一提示。
+
+            > 绿色版如果双击没反应：右键**「修复启动问题.bat」→ 以管理员身份运行**。
+            > 这是 Windows 的 AppContainer 目录权限问题，安装版不会有。
+
+            ## 这个版本做什么
+
+            在自动续费扣款之前提醒你：**这笔钱要扣了，还要留吗？**
+            并在扣费前 7/3/1 天各提醒一次，同时给出去哪退订、怎么退订的核对过的路径。
+
+            数据全部存在你自己电脑上（`%APPDATA%\subwatch\data.json`），不联网、不上传。
+          draft: false
+          prerelease: false

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'" />
+  <title>subwatch · 扣费前提醒你</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">¥</span>
+      <div>
+        <div class="brand-name">subwatch</div>
+        <div class="brand-sub">在你被扣款之前提醒你</div>
+      </div>
+    </div>
+
+    <div class="totals" id="totals">
+      <div class="total">
+        <div class="total-label">每月</div>
+        <div class="total-value" id="totalMonthly">—</div>
+      </div>
+      <div class="total">
+        <div class="total-label">每年</div>
+        <div class="total-value" id="totalYearly">—</div>
+      </div>
+      <div class="total">
+        <div class="total-label">订阅数</div>
+        <div class="total-value" id="totalCount">—</div>
+      </div>
+      <div class="total total-due" id="dueBox">
+        <div class="total-label">近期要扣费</div>
+        <div class="total-value" id="totalDue">—</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="btnShare" class="btn btn-ghost" title="生成分享卡片">分享卡片</button>
+      <button id="btnExport" class="btn btn-ghost" title="导出 CSV">导出</button>
+      <button id="btnAdd" class="btn btn-primary">+ 添加订阅</button>
+    </div>
+  </header>
+
+  <!-- 首次运行引导：核心是让用户亲手确认「通知真的能弹出来」 -->
+  <section id="setupBar" class="setup-bar hidden">
+    <div class="setup-text">
+      <strong>还有一步，提醒才生效</strong>
+      <span id="setupDetail" class="muted">subwatch 靠系统通知提醒你。先确认两件事：通知能弹出来、开机后它会自己启动。</span>
+    </div>
+    <div class="setup-actions">
+      <button id="btnTestNotify" class="btn btn-primary">试一下通知</button>
+      <button id="btnToggleAutostart" class="btn">开启开机自启</button>
+      <button id="btnSetupDone" class="btn btn-ghost btn-sm">我已确认，不再提示</button>
+    </div>
+  </section>
+
+  <main>
+    <!-- 待处理：标记了"还没退"的订阅，提醒用户它们还在扣钱 -->
+    <section id="pendingBanner" class="banner banner-pending hidden"></section>
+
+    <!-- 到期提醒横幅 -->
+    <section id="dueBanner" class="banner hidden"></section>
+
+    <!-- 空状态：首屏直接把预设铺出来，不让用户面对空白表单 -->
+    <section id="emptyState" class="empty hidden">
+      <h1>先加上你第一个订阅</h1>
+      <p class="muted">点一下就加好了，价格和周期都可以之后改。<strong>别从空白表单开始——那是我们要避免的摩擦。</strong></p>
+      <div id="presetGridEmpty" class="preset-grid"></div>
+      <button id="btnManualFromEmpty" class="btn btn-ghost">没有我要的，手动添加</button>
+    </section>
+
+    <!-- 订阅列表 -->
+    <section id="listSection" class="hidden">
+      <div class="list-head">
+        <h2>我的订阅</h2>
+        <span class="muted small" id="listHint">按「距扣费天数」排序，贵的排前面</span>
+      </div>
+      <div id="list" class="list"></div>
+    </section>
+  </main>
+
+  <!-- 添加订阅弹层 -->
+  <div id="addModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="addTitle">添加订阅</h2>
+        <button class="btn btn-ghost btn-sm" data-close="addModal">关闭</button>
+      </div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="preset">从常见订阅选</button>
+        <button class="tab" data-tab="manual">手动填写</button>
+      </div>
+
+      <div id="tabPreset" class="tab-panel">
+        <input id="presetSearch" class="input" type="search" placeholder="搜索：视频 / 音乐 / 云 / 域名 …" />
+        <div id="presetGrid" class="preset-grid"></div>
+      </div>
+
+      <form id="tabManual" class="tab-panel hidden">
+        <label class="field">
+          <span>名称 *</span>
+          <input class="input" name="name" required placeholder="例如：某某会员" />
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span>金额 *</span>
+            <input class="input" name="amount" type="number" step="0.01" min="0" required placeholder="25" />
+          </label>
+          <label class="field">
+            <span>币种</span>
+            <select class="input" name="currency" id="selCurrency"></select>
+          </label>
+        </div>
+        <div class="field-row">
+          <label class="field">
+            <span>周期 *</span>
+            <select class="input" name="cycle" id="selCycle"></select>
+          </label>
+          <label class="field">
+            <span>分类</span>
+            <input class="input" name="category" list="categoryList" placeholder="其他" />
+            <datalist id="categoryList"></datalist>
+          </label>
+        </div>
+        <label class="field">
+          <span>开始日期（第一次扣费日）*</span>
+          <input class="input" name="startDate" type="date" required />
+          <small class="muted">提示：这个日期决定往后每期的扣费日。1/31 起算会依次落在 2/28、3/31（不会漂移成 28 号）。</small>
+        </label>
+        <label class="field">
+          <span>备注</span>
+          <input class="input" name="note" placeholder="可选" />
+        </label>
+        <button class="btn btn-primary" type="submit">保存</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- 退订动作选择（一级）：点列表里的「退订」直接弹这三个选项，每个都有说明 -->
+  <div id="actionModal" class="modal hidden">
+    <div class="modal-card modal-narrow">
+      <div class="modal-head">
+        <h2 id="actionTitle">退订</h2>
+        <button class="btn btn-ghost btn-sm" data-close="actionModal">关闭</button>
+      </div>
+      <p id="actionSubtitle" class="muted small"></p>
+      <div id="actionChoices" class="choices"></div>
+    </div>
+  </div>
+
+  <!-- 退订指引（二级，可直达）：具体去哪点、怎么点 -->
+  <div id="guideModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="guideTitle">怎么退订</h2>
+        <button class="btn btn-ghost btn-sm" data-close="guideModal">关闭</button>
+      </div>
+      <div id="guideBody"></div>
+      <div class="row-gap guide-actions">
+        <button id="btnMarkCanceled" class="btn btn-primary">我已经退订了</button>
+        <button id="btnMarkUncanceled" class="btn btn-ghost">还没退，先记着</button>
+        <button id="btnActionBack" class="btn btn-ghost">返回</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 分享卡片弹层 -->
+  <div id="shareModal" class="modal hidden">
+    <div class="modal-card modal-narrow">
+      <div class="modal-head">
+        <h2>分享卡片</h2>
+        <button class="btn btn-ghost btn-sm" data-close="shareModal">关闭</button>
+      </div>
+      <p class="muted small">这张卡片是产品的自传播机制——晒账单比打广告更有人愿意转发。</p>
+      <div id="sharePreview" class="share-card"></div>
+      <div class="row-gap">
+        <button id="btnCopyShare" class="btn btn-primary">复制文字</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- 加载顺序：core 打包 → 浏览器回退 → 界面 -->
+  <script src="core.bundle.js"></script>
+  <script src="browser-shim.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+{
+  "name": "subwatch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "在自动续费扣款之前提醒你：这笔钱要扣了，还要留吗？",
+  "main": "src/main/main.js",
+  "author": "subwatch",
+  "license": "MIT",
+  "scripts": {
+    "build": "node build-core-bundle.js",
+    "build:icon": "node scripts/build-icon.js",
+    "pretest": "node build-core-bundle.js",
+    "test": "node run-tests.js",
+    "test:ui": "node build-core-bundle.js && node verify-ui.js",
+    "test:interactions": "node build-core-bundle.js && node verify-interactions.js",
+    "verify": "node build-core-bundle.js && node run-tests.js && node verify-ui.js && node verify-interactions.js",
+    "prestart": "node build-core-bundle.js",
+    "start": "node start-dev.js",
+    "start:browser": "node serve-renderer.js",
+    "pack:portable": "node pack-portable.js",
+    "pack:zip": "node pack-portable.js && node pack-zip.js",
+    "pack:win": "npm run pack:zip",
+    "pack:win:ci": "electron-builder --win --publish never"
+  },
+  "keywords": [
+    "subscription",
+    "renewal",
+    "reminder",
+    "desktop"
+  ],
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.subwatch.app",
+    "productName": "subwatch",
+    "copyright": "subwatch",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "!src/renderer/*.map",
+      "!**/*.log",
+      "!node_modules/**/*"
+    ],
+    "extraMetadata": {
+      "main": "src/main/main.js"
+    },
+    "npmRebuild": false,
+    "electronDist": "node_modules/electron/dist",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "subwatch-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "subwatch",
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": null
+  }
+}

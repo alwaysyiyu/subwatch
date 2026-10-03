@@ -1,0 +1,36 @@
+node_modules/
+dist/
+out/
+*.log
+
+# 沙箱内 npm / Electron / electron-builder 缓存（工作区外不可写，所以指到了项目内）
+.npm-cache/
+.electron-cache/
+.eb-cache/
+
+# 打包产物
+release/
+
+# 自动生成的渲染层 bundle（由 npm run build 生成）
+src/renderer/core.bundle.js
+
+# 排错残留
+.chrome-profile/
+.probe-userdata/
+
+# 临时提交信息文件
+msg.txt
+commit-msg.txt
+m[0-9].txt
+
+# 本地交接笔记：只在本地保留，不推到公开仓库
+# （含本机路径与开发环境的绕坑记录，对其他人无意义）
+HANDOFF.md
+NOTES.md
+
+# 内部工作文档：本人 / agent 的工作笔记，不是产品文档
+docs/plan.md
+docs/day1-*.md
+docs/research/
+
+# 注意：build/ 目录要提交 —— 里面有生成的 icon.ico（打包用）
